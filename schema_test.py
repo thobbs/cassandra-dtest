@@ -1,10 +1,12 @@
-
 from dtest import Tester
 from tools import since, rows_to_list
 from assertions import assert_invalid
+from cassandra.protocol import ConfigurationException
 import time
 
+
 class TestSchema(Tester):
+
     @since('2.0')
     def drop_column_compact_test(self):
         cursor = self.prepare()
@@ -87,6 +89,20 @@ class TestSchema(Tester):
 
         rows = cursor.execute("SELECT * FROM cf WHERE c2 = 5")
         self.assertEqual([[3,4,5]], rows_to_list(rows))
+
+    def alter_clustering_column_test(self):
+        """ Test for CASSANDRA-8879 """
+        cursor = self.prepare()
+
+        cursor.execute("USE ks")
+        cursor.execute("CREATE TABLE cf1 (a int, b blob, c int, PRIMARY KEY (a, b))")
+
+        # this should fail, because we can't go from blob to ascii
+        assert_invalid(cursor, "ALTER TABLE cf1 ALTER b TYPE ascii", expected=ConfigurationException)
+
+        # but we can go from ascii to blob
+        cursor.execute("CREATE TABLE cf2 (a int, b ascii, c int, PRIMARY KEY (a, b))")
+        cursor.execute("ALTER TABLE cf2 ALTER b TYPE blob")
 
     def prepare(self):
         cluster = self.cluster
