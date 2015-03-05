@@ -76,7 +76,7 @@ class TestSchema(Tester):
         self.assertEqual([[None], [None], [None], [4]], sorted(rows_to_list(rows)))
 
         rows = cursor.execute("SELECT * FROM cf")
-        self.assertEqual([[0,None,2], [1,None,3], [2,None,4], [3,4,5]], sorted(rows_to_list(rows)))
+        self.assertEqual([[0, None, 2], [1, None, 3], [2, None, 4], [3, 4, 5]], sorted(rows_to_list(rows)))
 
         rows = cursor.execute("SELECT c1 FROM cf WHERE key = 0")
         self.assertEqual([[None]], rows_to_list(rows))
@@ -85,24 +85,18 @@ class TestSchema(Tester):
         self.assertEqual([[4]], rows_to_list(rows))
 
         rows = cursor.execute("SELECT * FROM cf WHERE c2 = 2")
-        self.assertEqual([[0,None,2]], rows_to_list(rows))
+        self.assertEqual([[0, None, 2]], rows_to_list(rows))
 
         rows = cursor.execute("SELECT * FROM cf WHERE c2 = 5")
-        self.assertEqual([[3,4,5]], rows_to_list(rows))
+        self.assertEqual([[3, 4, 5]], rows_to_list(rows))
 
     def alter_clustering_column_test(self):
         """ Test for CASSANDRA-8879 """
         cursor = self.prepare()
 
         cursor.execute("USE ks")
-        cursor.execute("CREATE TABLE cf1 (a int, b blob, c int, PRIMARY KEY (a, b))")
-
-        # this should fail, because we can't go from blob to ascii
-        assert_invalid(cursor, "ALTER TABLE cf1 ALTER b TYPE ascii", expected=ConfigurationException)
-
-        # but we can go from ascii to blob
-        cursor.execute("CREATE TABLE cf2 (a int, b ascii, c int, PRIMARY KEY (a, b))")
-        cursor.execute("ALTER TABLE cf2 ALTER b TYPE blob")
+        cursor.execute("CREATE TABLE cf1 (a int, b ascii, c int, PRIMARY KEY (a, b))")
+        assert_invalid(cursor, "ALTER TABLE cf1 ALTER b TYPE blob", expected=ConfigurationException)
 
     def prepare(self):
         cluster = self.cluster
