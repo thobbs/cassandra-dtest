@@ -95,8 +95,18 @@ class TestSchema(Tester):
         cursor = self.prepare()
 
         cursor.execute("USE ks")
+
+        # you can alter the type of clustering columns when not using COMPACT STORAGE
         cursor.execute("CREATE TABLE cf1 (a int, b ascii, c int, PRIMARY KEY (a, b))")
-        assert_invalid(cursor, "ALTER TABLE cf1 ALTER b TYPE blob", expected=ConfigurationException)
+        cursor.execute("ALTER TABLE cf1 ALTER b TYPE blob")
+
+        # but if you have non-composite clustering columns w/ COMPACT STORAGE, that's not allowed
+        cursor.execute("CREATE TABLE cf2 (a int, b ascii, c int, PRIMARY KEY (a, b)) WITH COMPACT STORAGE")
+        assert_invalid(cursor, "ALTER TABLE cf2 ALTER b TYPE blob", expected=ConfigurationException)
+
+        cursor.execute("CREATE TABLE cf3 (a int, b ascii, c ascii, d int, PRIMARY KEY (a, b, c)) WITH COMPACT STORAGE")
+        assert_invalid(cursor, "ALTER TABLE cf3 ALTER b TYPE blob", expected=ConfigurationException)
+        assert_invalid(cursor, "ALTER TABLE cf3 ALTER c TYPE blob", expected=ConfigurationException)
 
     def prepare(self):
         cluster = self.cluster
