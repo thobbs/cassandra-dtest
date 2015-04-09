@@ -1,9 +1,11 @@
-from dtest import Tester
+import random
+from dtest import Tester, debug
 from tools import putget
 from ccmlib.cluster import Cluster
 from assertions import assert_one, assert_none
 from cassandra import ConsistencyLevel as CL
 from cassandra.query import SimpleStatement
+from cassandra.concurrent import execute_concurrent_with_args
 
 class TestMultiDCPutGet(Tester):
 
@@ -31,10 +33,10 @@ class TestMultiDCPutGet(Tester):
 
     def test_9045(self):
         cluster = self.cluster
-        cluster.populate([3, 2]).set_configuration_options({'in_memory_compaction_limit_in_mb' : '1'}).start()
+        cluster.populate(3).set_configuration_options({'in_memory_compaction_limit_in_mb': '1', 'write_request_timeout_in_ms': '10000'}).start()
 
         session = self.patient_cql_connection(cluster.nodelist()[0])
-        self.create_ks(session, 'ks', {'dc1' : 2, 'dc1': 1})
+        self.create_ks(session, 'ks', 3)
         session.execute("""CREATE TABLE bounces (
             domainid text,
             address text,
@@ -59,18 +61,59 @@ class TestMultiDCPutGet(Tester):
         insert_query = session.prepare("INSERT INTO bounces (domainid, address, message, t) VALUES (?, ?, ?, ?)")
         insert_query.consistency_level = CL.ALL
         node1 = self.cluster.nodelist()[0]
-        for i in xrange(4000000):
-            session.execute_async(insert_query, ['a', '%d' % i, 'Here is my message, it helps to make things longer to hit limits for files.', i])
-            if i % 100000 == 0:
-                node1.flush()
+        message = "a" * 1000
+        outer_rounds = 400
+        inner_rounds = 10000
+        for outer in range(outer_rounds):
+            debug("Inserting round %d" % outer)
+            args = [('a', str(outer * inner_rounds + i), message, outer * inner_rounds + i) for i in xrange(inner_rounds)]
+            execute_concurrent_with_args(session, insert_query, args)
+            node1.flush()
 
-        for i in xrange(10000):
-            assert_one(session, "SELECT * FROM bounces WHERE domainid = 'a' and address='%s'" % i, ['a', '%s' % i, 'Here is my message, it helps to make things longer to hit limits for files.', i], cl=CL.ALL)
-        for i in xrange(10000):
+        num_rows = outer_rounds * inner_rounds
+        to_delete = set([random.randint(0, num_rows - 1) for i in xrange(10000)])
+        print "rows to delete:", to_delete
+
+        debug("Selecing rows")
+        for i in to_delete:
+            assert_one(session, "SELECT * FROM bounces WHERE domainid = 'a' and address='%s'" % i, ['a', '%s' % i, message, i], cl=CL.ALL)
+
+        debug("Updating rows")
+        for i in to_delete:
+            session.execute(SimpleStatement("UPDATE bounces SET message = '%s' WHERE domainid = 'a' AND address = '%s'" % (message, i), consistency_level=CL.ALL))
+
+        node1.flush()
+
+        debug("Deleting rows")
+        for i in to_delete:
             session.execute(SimpleStatement("DELETE FROM bounces WHERE domainid = 'a' and address = '%s'" % i, consistency_level=CL.ALL))
 
         node1.flush()
         node1.compact()
 
-        for i in xrange(10000):
-            assert_none(session, "SELECT * FROM bounces WHERE domainid = 'a' and address='%s'" % i, cl=CL.ALL)
+        debug("Selecting rows")
+        for i in to_delete:
+            assert_none(session, "SELECT * FROM bounces WHERE domainid = 'a' and address='%s'" % i, cl=CL.ONE)
+
+        debug("Repairing node1")
+        node1.repair(["-pr", "ks", "bounces"])
+
+        debug("Selecting rows")
+        for i in to_delete:
+            assert_none(session, "SELECT * FROM bounces WHERE domainid = 'a' and address='%s'" % i, cl=CL.ONE)
+
+        debug("Repairing node2")
+        node2 = self.cluster.nodelist()[1]
+        node2.repair(["-pr", "ks", "bounces"])
+
+        debug("Selecting rows")
+        for i in to_delete:
+            assert_none(session, "SELECT * FROM bounces WHERE domainid = 'a' and address='%s'" % i, cl=CL.ONE)
+
+        debug("Repairing node2")
+        node3 = self.cluster.nodelist()[2]
+        node3.repair(["-pr", "ks", "bounces"])
+
+        debug("Selecting rows")
+        for i in to_delete:
+            assert_none(session, "SELECT * FROM bounces WHERE domainid = 'a' and address='%s'" % i, cl=CL.ONE)
