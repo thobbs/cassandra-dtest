@@ -1519,3 +1519,31 @@ class TestPagingWithDeletions(BasePagingTester, PageAssertionMixin):
                    node3.grep_log(failure_msg))
 
         self.assertTrue(failure, "Cannot find tombstone failure threshold error in log")
+
+    def test_deletion_with_distinct_paging(self):
+        self.session = self.prepare()
+        self.create_ks(self.session, 'test_paging_size', 2)
+        self.session.execute("CREATE TABLE paging_test ( "
+                             "k int, s int static, c int, v int, "
+                             "PRIMARY KEY (k, c) )")
+
+        for i in range(4):
+            for j in range(2):
+                self.session.execute("INSERT INTO paging_test (k, s, c, v) VALUES (%s, %s, %s, %s)", (i, i, j, j))
+
+        self.session.default_fetch_size = 2
+        result = self.session.execute("SELECT DISTINCT k, s FROM paging_test")
+        result = list(result)
+        self.assertEqual(4, len(result))
+
+        future = self.session.execute_async("SELECT DISTINCT k, s FROM paging_test")
+
+        # this will fetch the first page
+        fetcher = PageFetcher(future)
+
+        # delete the first row in the last partition that was returned in the first page
+        self.session.execute("DELETE FROM paging_test WHERE k = %s AND c = %s", (result[1]['k'], 0))
+
+        # finish paging
+        fetcher.request_all()
+        self.assertEqual([2, 2], fetcher.num_results_all())
