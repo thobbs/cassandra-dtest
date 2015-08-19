@@ -235,7 +235,9 @@ class TestReplaceAddress(Tester):
         When starting a node from a clean slate with the same address as
         an existing down node, the node should error out even when
         auto_bootstrap = false (or the node is a seed) and tell the user
-        to use replace_address.  See CASSANDRA-10134 for more details.
+        to use replace_address.
+
+        @jira_ticket CASSANDRA-10134
         """
         debug("Starting cluster with 3 nodes.")
         cluster = self.cluster
