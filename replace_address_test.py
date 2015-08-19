@@ -267,7 +267,7 @@ class TestReplaceAddress(Tester):
                 rmtree(os.path.join(node3.get_path(), 'data'))
 
             node3.set_configuration_options(values={'auto_bootstrap': auto_bootstrap})
-            debug("Starting node 3 with auto_boostrap = %s" % auto_bootstrap)
+            debug("Starting node 3 with auto_boostrap = {val}".format(val=auto_bootstrap))
             node3.start()
             node3.watch_log_for('Use cassandra.replace_address if you want to replace this node', from_mark=mark, timeout=20)
             mark = node3.mark_log()
