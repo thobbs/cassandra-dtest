@@ -254,8 +254,6 @@ class TestAvailability(TestHelper):
         """
         Test availability for read and write via the session passed in as a prameter.
         """
-        cluster = self.cluster
-
         self.log("Connected to %s for %s/%s/%s" %
                  (session.cluster.contact_points, self._name(write_cl), self._name(read_cl), self._name(serial_cl)))
 
@@ -767,29 +765,53 @@ class TestConsistency(Tester):
         self.create_ks(session, 'ks', 3)
         self.create_cf(session, 'cf', read_repair=0.0)
 
+        normal_key = 'normal'
+        reversed_key = 'reversed'
+
         # Repeat this test 10 times to make it more easy to spot a null pointer exception caused by a race, see CASSANDRA-9460
         for k in xrange(10):
-            # insert 9 columns in one row
-            insert_columns(self, session, 0, 9)
+            # insert 9 columns in two rows
+            insert_columns(self, session, normal_key, 9)
+            insert_columns(self, session, reversed_key, 9)
 
             # Deleting 3 first columns with a different node dead each time
-            self.stop_delete_and_restart(1, 0)
-            self.stop_delete_and_restart(2, 1)
-            self.stop_delete_and_restart(3, 2)
+            self.stop_delete_and_restart(1, normal_key=normal_key, normal_column=0, reversed_key=reversed_key, reversed_column=6)
+            self.stop_delete_and_restart(2, normal_key=normal_key, normal_column=1, reversed_key=reversed_key, reversed_column=7)
+            self.stop_delete_and_restart(3, normal_key=normal_key, normal_column=2, reversed_key=reversed_key, reversed_column=8)
 
-            # Query 3 firsts columns
+            # Query 3 firsts columns in normal order
             session = self.patient_cql_connection(node1, 'ks')
-            query = SimpleStatement('SELECT c, v FROM cf WHERE key=\'k0\' LIMIT 3', consistency_level=ConsistencyLevel.QUORUM)
+            query = SimpleStatement(
+                'SELECT c, v FROM cf WHERE key=\'k{}\' LIMIT 3'.format(normal_key),
+                consistency_level=ConsistencyLevel.QUORUM)
             rows = list(session.execute(query))
             res = rows
             assert_length_equal(res, 3)
 
             # value 0, 1 and 2 have been deleted
             for i in xrange(1, 4):
-                self.assertEqual(res[i - 1][1], 'value{}'.format(i + 2), 'Expecting value{}, got {} ({})'.format(i + 2, res[i - 1][1], str(res)))
+                expected = 'value{}'.format(i + 2)
+                actual = res[i - 1][1]
+                message = 'Expecting value{}, got {} ({})'.format(i + 2, res[i - 1][1], str(res))
+                self.assertEqual(expected, actual, message)
 
-            truncate_statement = SimpleStatement('TRUNCATE cf', consistency_level=ConsistencyLevel.QUORUM)
-            session.execute(truncate_statement)
+            # Query 3 firsts columns in reverse order
+            session = self.patient_cql_connection(node1, 'ks')
+            query = SimpleStatement(
+                'SELECT c, v FROM cf WHERE key=\'k{}\' ORDER BY c DESC LIMIT 3'.format(reversed_key),
+                consistency_level=ConsistencyLevel.QUORUM)
+            rows = list(session.execute(query))
+            res = rows
+            assert_length_equal(res, 3)
+
+            # value 6, 7 and 8 have been deleted
+            for i in xrange(0, 3):
+                expected = 'value{}'.format(5 - i)
+                actual = res[i][1]
+                message = 'Expecting value {}, got {} ({})'.format(5 - i, res[i][1], str(res))
+                self.assertEqual(expected, actual, expected)
+
+            session.execute('TRUNCATE cf')
 
     def short_read_delete_test(self):
         """ Test short reads ultimately leaving no columns alive [#4000] """
@@ -898,47 +920,6 @@ class TestConsistency(Tester):
         for n in xrange(0, 10000):
             query_c1c2(session, n, ConsistencyLevel.ONE)
 
-    def short_read_reversed_test(self):
-        """
-        @jira_ticket CASSANDRA-9460
-        """
-        cluster = self.cluster
-
-        # Disable hinted handoff and set batch commit log so this doesn't
-        # interfere with the test
-        cluster.set_configuration_options(values={'hinted_handoff_enabled': False})
-        cluster.set_batch_commitlog(enabled=True)
-
-        cluster.populate(3).start(wait_other_notice=True)
-        node1, node2, node3 = cluster.nodelist()
-
-        session = self.patient_cql_connection(node1)
-        self.create_ks(session, 'ks', 3)
-        self.create_cf(session, 'cf', read_repair=0.0)
-
-        # Repeat this test 10 times to make it more easy to spot a null pointer exception caused by a race, see CASSANDRA-9460
-        for k in xrange(10):
-            # insert 9 columns in one row
-            insert_columns(self, session, 0, 9)
-
-            # Deleting 3 last columns with a different node dead each time
-            self.stop_delete_and_restart(1, 6)
-            self.stop_delete_and_restart(2, 7)
-            self.stop_delete_and_restart(3, 8)
-
-            # Query 3 firsts columns
-            session = self.patient_cql_connection(node1, 'ks')
-            query = SimpleStatement('SELECT c, v FROM cf WHERE key=\'k0\' ORDER BY c DESC LIMIT 3', consistency_level=ConsistencyLevel.QUORUM)
-            rows = list(session.execute(query))
-            res = rows
-            assert_length_equal(res, 3)
-
-            # value 6, 7 and 8 have been deleted
-            for i in xrange(0, 3):
-                self.assertEqual(res[i][1], 'value%d' % (5 - i), 'Expecting value {}, got {} ({})'.format(5 - i, res[i][1], str(res)))
-
-            session.execute('TRUNCATE cf')
-
     def quorum_available_during_failure_test(self):
         CL = ConsistencyLevel.QUORUM
         RF = 3
@@ -967,15 +948,25 @@ class TestConsistency(Tester):
         for n in xrange(100):
             query_c1c2(session, n, CL)
 
-    def stop_delete_and_restart(self, node_number, column):
+    def stop_delete_and_restart(self, node_number, normal_key, normal_column, reversed_key, reversed_column):
         to_stop = self.cluster.nodes["node%d" % node_number]
         next_node = self.cluster.nodes["node%d" % (((node_number + 1) % 3) + 1)]
         to_stop.flush()
         to_stop.stop(wait_other_notice=True)
         session = self.patient_cql_connection(next_node, 'ks')
+
+        # delete data for normal key
         query = 'BEGIN BATCH '
-        query = query + 'DELETE FROM cf WHERE key=\'k0\' AND c=\'c%06d\'; ' % column
-        query = query + 'DELETE FROM cf WHERE key=\'k0\' AND c=\'c2\'; '
+        query = query + 'DELETE FROM cf WHERE key=\'k%s\' AND c=\'c%06d\'; ' % (normal_key, normal_column)
+        query = query + 'DELETE FROM cf WHERE key=\'k%s\' AND c=\'c2\'; ' % (normal_key,)
+        query = query + 'APPLY BATCH;'
+        simple_query = SimpleStatement(query, consistency_level=ConsistencyLevel.QUORUM)
+        session.execute(simple_query)
+
+        # delete data for reversed read key
+        query = 'BEGIN BATCH '
+        query = query + 'DELETE FROM cf WHERE key=\'k%s\' AND c=\'c%06d\'; ' % (reversed_key, reversed_column)
+        query = query + 'DELETE FROM cf WHERE key=\'k%s\' AND c=\'c2\'; ' % (reversed_key,)
         query = query + 'APPLY BATCH;'
         simple_query = SimpleStatement(query, consistency_level=ConsistencyLevel.QUORUM)
         session.execute(simple_query)
