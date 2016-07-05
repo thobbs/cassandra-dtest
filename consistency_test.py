@@ -774,10 +774,12 @@ class TestConsistency(Tester):
             insert_columns(self, session, normal_key, 9)
             insert_columns(self, session, reversed_key, 9)
 
-            # Deleting 3 first columns with a different node dead each time
-            self.stop_delete_and_restart(1, normal_key=normal_key, normal_column=0, reversed_key=reversed_key, reversed_column=6)
-            self.stop_delete_and_restart(2, normal_key=normal_key, normal_column=1, reversed_key=reversed_key, reversed_column=7)
-            self.stop_delete_and_restart(3, normal_key=normal_key, normal_column=2, reversed_key=reversed_key, reversed_column=8)
+            # Delete 3 first columns (and 3 last columns, for the reversed version) with a different node dead each time
+            for node, column_number_to_delete in zip(range(1, 4), range(3)):
+                self.stop_node(node)
+                self.delete(node, normal_key, column_number_to_delete)
+                self.delete(node, reversed_key, 8 - column_number_to_delete)
+                self.restart_node(node)
 
             # Query 3 firsts columns in normal order
             session = self.patient_cql_connection(node1, 'ks')
@@ -790,10 +792,7 @@ class TestConsistency(Tester):
 
             # value 0, 1 and 2 have been deleted
             for i in xrange(1, 4):
-                expected = 'value{}'.format(i + 2)
-                actual = res[i - 1][1]
-                message = 'Expecting value{}, got {} ({})'.format(i + 2, res[i - 1][1], str(res))
-                self.assertEqual(expected, actual, message)
+                self.assertEqual('value{}'.format(i + 2), res[i - 1][1])
 
             # Query 3 firsts columns in reverse order
             session = self.patient_cql_connection(node1, 'ks')
@@ -806,10 +805,7 @@ class TestConsistency(Tester):
 
             # value 6, 7 and 8 have been deleted
             for i in xrange(0, 3):
-                expected = 'value{}'.format(5 - i)
-                actual = res[i][1]
-                message = 'Expecting value {}, got {} ({})'.format(5 - i, res[i][1], str(res))
-                self.assertEqual(expected, actual, expected)
+                self.assertEqual('value{}'.format(5 - i), res[i][1])
 
             session.execute('TRUNCATE cf')
 
@@ -948,27 +944,23 @@ class TestConsistency(Tester):
         for n in xrange(100):
             query_c1c2(session, n, CL)
 
-    def stop_delete_and_restart(self, node_number, normal_key, normal_column, reversed_key, reversed_column):
+    def stop_node(self, node_number):
         to_stop = self.cluster.nodes["node%d" % node_number]
-        next_node = self.cluster.nodes["node%d" % (((node_number + 1) % 3) + 1)]
         to_stop.flush()
         to_stop.stop(wait_other_notice=True)
+
+    def delete(self, stopped_node_number, key, column):
+        next_node = self.cluster.nodes["node%d" % (((stopped_node_number + 1) % 3) + 1)]
         session = self.patient_cql_connection(next_node, 'ks')
 
         # delete data for normal key
         query = 'BEGIN BATCH '
-        query = query + 'DELETE FROM cf WHERE key=\'k%s\' AND c=\'c%06d\'; ' % (normal_key, normal_column)
-        query = query + 'DELETE FROM cf WHERE key=\'k%s\' AND c=\'c2\'; ' % (normal_key,)
+        query = query + 'DELETE FROM cf WHERE key=\'k%s\' AND c=\'c%06d\'; ' % (key, column)
+        query = query + 'DELETE FROM cf WHERE key=\'k%s\' AND c=\'c2\'; ' % (key,)
         query = query + 'APPLY BATCH;'
         simple_query = SimpleStatement(query, consistency_level=ConsistencyLevel.QUORUM)
         session.execute(simple_query)
 
-        # delete data for reversed read key
-        query = 'BEGIN BATCH '
-        query = query + 'DELETE FROM cf WHERE key=\'k%s\' AND c=\'c%06d\'; ' % (reversed_key, reversed_column)
-        query = query + 'DELETE FROM cf WHERE key=\'k%s\' AND c=\'c2\'; ' % (reversed_key,)
-        query = query + 'APPLY BATCH;'
-        simple_query = SimpleStatement(query, consistency_level=ConsistencyLevel.QUORUM)
-        session.execute(simple_query)
-
-        to_stop.start(wait_for_binary_proto=True, wait_other_notice=True)
+    def restart_node(self, node_number):
+        stopped_node = self.cluster.nodes["node%d" % node_number]
+        stopped_node.start(wait_for_binary_proto=True, wait_other_notice=True)
