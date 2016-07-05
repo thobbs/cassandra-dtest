@@ -747,6 +747,9 @@ class TestAccuracy(TestHelper):
 
 class TestConsistency(Tester):
 
+    @known_failure(failure_source='test',
+                   jira_url='https://issues.apache.org/jira/browse/CASSANDRA-12141',
+                   flaky=True)
     def short_read_test(self):
         """
         @jira_ticket CASSANDRA-9460
